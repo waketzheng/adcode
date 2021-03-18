@@ -10,10 +10,10 @@
 
 ## SYNOPSIS
 
-* 行政区划代码数据基线来自国家统计局：[2016年统计用区划代码和城乡划分代码(截止2016年07月31日)](http://www.stats.gov.cn/tjsj/tjbz/tjyqhdmhcxhfdm/2016/index.html)
-* 行政区划变动数据以民政部公告为准：[2017年行政区划代码](http://www.mca.gov.cn/article/sj/tjbz/a/2017/)
+* 行政区划代码数据基线来自国家统计局：[2020年统计用区划代码和城乡划分代码(截止2020年06月30日)](http://www.stats.gov.cn/tjsj/tjbz/tjyqhdmhcxhfdm/2020/index.html)
+* 行政区划变动数据以民政部公告为准：[2020年行政区划代码](http://preview.www.mca.gov.cn/article/sj/xzqh/2020/2020/202101041104.html)
 * 行政区划地理边界数据来自：[高德地图 行政区划](http://lbs.amap.com/api/webservice/guide/api/district)
-* 目前数据时间点为：2016年07月31日，后续会追赶最新变更。
+* 目前数据时间点为：2020年06月30日，欢迎提PR来更新数据。
 * 核心数据表两张：
   * 行政区划数据表：`adcode`
   * 地理围栏数据表：`fences`
@@ -277,7 +277,7 @@ PR可以直接在`adcode/*.csv`与`fences/*.json`中进行变更，能从commit 
 * 任何变更都需要反映在commit log中，包括变更事项，变更时间，引用的公告等。
 
 目前我会在有空时追赶民政部的进度，但这活实在无聊也无趣。
-
+  -- 后续考虑编写脚本来做这个事情
 
 
 ## LICENSE
