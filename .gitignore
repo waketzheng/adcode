@@ -14,3 +14,6 @@ scripts/
 # Jetbrain
 .idea/
 adcode.iml
+
+# Human read web pages
+htmls/
