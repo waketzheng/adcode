@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-黄鹤一去不复返，白云千载空悠悠。
-孤帆远影碧空尽，惟见长江天际流。
+但使龙城飞将在，不教胡马渡阴山。
+多情自古伤离别，可怜花发生。
 """
 
 import functools
@@ -15,21 +15,20 @@ from contextlib import contextmanager, suppress
 from datetime import datetime
 from multiprocessing import active_children
 from pathlib import Path
-from typing import (
-    Dict,
-    Generator,
-    Tuple,
-    TypeAlias,
-    TypeVar,
-)
+from typing import Dict, Generator, Optional, Tuple, Type, TypeAlias, TypeVar
 
-# pip install asynctor requests fake_useragent pyquery beautifulsoup4 loguru
+import asyncer
 import asynctor
 import fake_useragent
 import requests
+
+# pip install asynctor requests fake_useragent pyquery beautifulsoup4 loguru
+import tortoise
 from bs4 import BeautifulSoup
+from database_url import generate
 from loguru import logger
 from pyquery import PyQuery as pq
+from tortoise import Model, Tortoise, fields, run_async
 
 # pip install playwright
 # playwright install --with-deps chromium --dry-run
@@ -37,6 +36,59 @@ from pyquery import PyQuery as pq
 with suppress(DeprecationWarning):
     from playwright.sync_api import Error, sync_playwright
     from playwright.sync_api import TimeoutError as PlayTimeoutError
+
+
+class AdcodeModel(Model):
+    id = fields.IntField(primary_key=True)
+    adcode = fields.CharField(max_length=20, unique=True)
+    name = fields.CharField(max_length=50)
+
+    class Meta:
+        abstract = True
+
+
+class Province(AdcodeModel):
+    name = fields.CharField(max_length=20, unique=True)
+
+    class Meta:
+        verbose_name = "省"
+
+
+class City(AdcodeModel):
+    province: fields.ForeignKeyRelation = fields.ForeignKeyField(
+        "models.Province", on_delete=fields.OnDelete.CASCADE, related_name="cities"
+    )
+
+    class Meta:
+        verbose_name = "市"
+
+
+class County(AdcodeModel):
+    city: fields.ForeignKeyRelation = fields.ForeignKeyField(
+        "models.City", on_delete=fields.OnDelete.CASCADE, related_name="counties"
+    )
+
+    class Meta:
+        verbose_name = "县"
+
+
+class Town(AdcodeModel):
+    county: fields.ForeignKeyRelation = fields.ForeignKeyField(
+        "models.County", on_delete=fields.OnDelete.CASCADE, related_name="towns"
+    )
+
+    class Meta:
+        verbose_name = "镇"
+
+
+class Village(AdcodeModel):
+    town: fields.ForeignKeyRelation = fields.ForeignKeyField(
+        "models.Town", on_delete=fields.OnDelete.CASCADE, related_name="villages"
+    )
+
+    class Meta:
+        verbose_name = "乡"
+
 
 BASE_DIR = Path(__file__).parent.resolve()
 URI: TypeAlias = str  # e.g.: '11/1101.html'
@@ -48,7 +100,8 @@ INDEX_URL = "https://www.stats.gov.cn/sj/tjbz/tjyqhdmhcxhfdm/2023/index.html"
 if os.getenv("PAD_INDEX_URL") == "1":
     INDEX_URL = INDEX_URL.replace("https://", "https://waketzheng.top/")
     INTERVAL = 0
-    print(f'Change index URL to be: {INDEX_URL}')
+    print(f"Change index URL to be: {INDEX_URL}")
+# 注：ALTER_URL用不上，因为INDEX_URL获取到的已经是变更后的了
 ALTER_URL = "https://www.mca.gov.cn/mzsj/xzqh/2023/202302xzqh.html"
 ERR_MSG = "Please enable JavaScript and refresh the page"
 ERR_MSG_CN = "请开启JavaScript并刷新该页"
@@ -239,9 +292,112 @@ def build_area_dict(data: AreaDict) -> AreaDict:
     return res
 
 
+async def parse_area_dict(
+    data: AreaDict,
+    model: Type[AdcodeModel],
+    parent_model: Type[AdcodeModel],
+    css_class: str,
+    adcode_obj: Optional[dict[str, AdcodeModel]] = None,
+) -> AreaDict:
+    res: AreaDict = {}
+    if adcode_obj is None:
+        objs = await parent_model.all()
+        adcode_obj = {i.adcode: i for i in objs}
+    attr = parent_model.__name__.lower()
+    for url, (adcode, name) in data.items():
+        if name.isdigit() and not adcode.isdigit():
+            adcode, name = name, adcode
+        text = load_or_fetch(url)
+        if not text:
+            continue
+        try:
+            parent = adcode_obj[adcode]
+        except KeyError:
+            if obj := await parent_model.filter(adcode=adcode).first():
+                parent = obj
+            else:
+                print(f"Object not found: {parent_model.__name__}({adcode = })")
+                continue
+        await create_objects(text, parent, attr=attr, css_class=css_class, model=model)
+        host = parent_path(url)
+        for link, label in parse_links(text):
+            url = host + link
+            res[url] = res.get(url, ()) + (label,)  # type:ignore
+    return res
+
+
+async def create_objects(
+    text: str,
+    parent: AdcodeModel,
+    attr: str = "province",
+    css_class: str = "tr.citytr",
+    model: Type[AdcodeModel] = City,
+) -> dict:
+    adcode_obj: dict = {}
+    doc = pq(text)
+    if not (trs := list(doc(css_class).items())) and css_class == "tr.countytr":
+        trs = list(doc("tr.towntr").items())
+    for tr in trs:
+        parts = tr.text().split()
+        try:
+            adcode, *_, name = parts
+        except ValueError:
+            print(f"Can't parse adcode: {parts}")
+            continue
+        if (obj := await model.filter(adcode=adcode).first()) is None:
+            obj = model(name=name, adcode=adcode)
+            setattr(obj, attr, parent)
+            try:
+                await obj.save()
+            except tortoise.exceptions.IntegrityError as e:
+                print(f"{attr=}; {parent=}; {obj=}")
+                raise e
+        adcode_obj[adcode] = obj
+    return adcode_obj
+
+
+async def parse_downloaded(root_url: URI, province: str, verbose=False) -> None:
+    logger.debug(f"{province=}; {root_url.split('/')[-1]=}; {os.getpid() = }")
+    text = load_or_fetch(root_url)
+    host = parent_path(root_url)
+    assert host.endswith("/")
+    obj, created = await Province.get_or_create(
+        name=province, adcode=Path(root_url).stem
+    )
+    if verbose:
+        print(created, obj)
+    cities: AreaDict = {}
+    for link, label in parse_links(text, province):
+        url = host + link
+        cities[url] = cities.get(url, ()) + (label,)  # type:ignore
+    adcode_city = await create_objects(text, obj)
+    if verbose:
+        print(province, f"{len(adcode_city) = }")
+    counties: AreaDict = await parse_area_dict(
+        cities, County, City, "tr.countytr", adcode_city
+    )
+    if verbose:
+        print(province, f"has link: {len(counties) = }")
+    if not counties:
+        return
+    towns: AreaDict = await parse_area_dict(counties, Town, County, "tr.towntr")
+    if verbose:
+        print(province, f"objects with link: {len(towns) = }")
+    if not towns:
+        return
+    villages: AreaDict = await parse_area_dict(towns, Village, Town, "tr.villagetr")
+    if verbose and villages:  # Expected villages to be empty, as them are no link
+        print(province, f"{len(villages) = }")
+    if not villages:
+        return
+    houses: AreaDict = build_area_dict(villages)
+    if verbose:
+        logger.warning(f"{province} -- {len(houses) = }")
+
+
 def download_recursive(root_url: URI, province: str, verbose=False) -> None:
-    # 省=>市=>县=>镇=>街
-    # province -> city -> county -> town -> street
+    # 省=>市=>县=>镇=>乡
+    # province -> city -> county -> town -> village
     logger.debug(f"{province=}; {root_url.split('/')[-1]=}; {os.getpid() = }")
     text = load_or_fetch(root_url)
     host = parent_path(root_url)
@@ -263,12 +419,12 @@ def download_recursive(root_url: URI, province: str, verbose=False) -> None:
         print(province, f"{len(towns) = }")
     if not towns:
         return
-    streets: AreaDict = build_area_dict(towns)
+    villages: AreaDict = build_area_dict(towns)
     if verbose:
-        print(province, f"{len(streets) = }")
-    if not streets:
+        print(province, f"{len(villages) = }")
+    if not villages:
         return
-    houses: AreaDict = build_area_dict(streets)
+    houses: AreaDict = build_area_dict(villages)
     if verbose:
         print(province, f"{len(houses) = }")
     Player.teardown()
@@ -285,6 +441,8 @@ def main() -> None:
         elif a1 == "bj":
             verbose = "-v" in sys.argv or "--verbose" in sys.argv
             walk(verbose=verbose)
+        elif a1 == "parse":
+            run_async(laving())
         elif a1.isdigit():
             count = int(a1)
             with ProcessPoolExecutor() as executor:
@@ -339,6 +497,28 @@ def main() -> None:
                 logger.exception(e)
                 print(f"{index}/{total}: {all_provinces}")
             logger.debug(f"Tasks completed, to be closing {executor=}")
+
+
+async def register_orm():
+    await Tortoise.init(
+        db_url=generate("db.sqlite3"),
+        modules={"models": ["__main__"]},
+    )
+    await Tortoise.generate_schemas()
+
+
+async def laving() -> None:
+    await register_orm()
+    first_page = http_get(INDEX_URL)
+    host = parent_path(INDEX_URL)
+    async with asyncer.create_task_group() as tg:
+        for href, province_name in parse_links(first_page):
+            tg.soonify(parse_downloaded)(host + href, province_name, verbose=True)
+    print("provinces:", await Province.all())
+    print("cities:", await City.all().count())
+    print("counties:", await County.all().count())
+    print("towns:", await Town.all().count())
+    print("villages:", await Village.all().count())
 
 
 if __name__ == "__main__":
