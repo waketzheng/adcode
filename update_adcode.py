@@ -23,7 +23,7 @@ import asynctor
 import fake_useragent
 import requests
 
-# pip install asynctor requests fake_useragent pyquery beautifulsoup4 loguru
+# pip install asynctor requests fake_useragent pyquery beautifulsoup4 loguru tqdm
 import tortoise
 from bs4 import BeautifulSoup
 from database_url import generate
@@ -88,6 +88,7 @@ class Village(AdcodeModel):
     town: fields.ForeignKeyRelation = fields.ForeignKeyField(
         "models.Town", on_delete=fields.OnDelete.CASCADE, related_name="villages"
     )
+    ur_code = fields.CharField(3, description="3位城乡属性划分代码", default="")
 
     class Meta:
         verbose_name = "乡"
@@ -474,13 +475,15 @@ async def create_objects(
     for tr in trs:
         parts = tr.text().split()
         try:
-            adcode, *_, name = parts
+            adcode, *ur_code, name = parts
         except ValueError:
             print(f"Can't parse adcode: {parts}")
             continue
         if (obj := await model.filter(adcode=adcode).first()) is None:
             obj = model(name=name, adcode=adcode)
             setattr(obj, attr, parent)
+            if ur_code and model is Village:
+                obj.ur_code = ur_code[0]
             try:
                 await obj.save()
             except tortoise.exceptions.IntegrityError as e:
@@ -653,6 +656,33 @@ async def laving() -> None:
     print("counties:", await County.all().count())
     print("towns:", await Town.all().count())
     print("villages:", await Village.all().count())
+
+
+def parse_csv(p: Path) -> list[list[str]]:
+    text = p.read_text("utf-8")
+    lines = text.splitlines()
+    return [j.split(",") for i in lines if (j := i.strip())]
+
+
+async def read_local_adcodes(verbose=False) -> list[AreaInfo]:
+    if verbose:
+        from tqdm import tqdm as _tqdm
+
+        def tqdm(g):
+            return _tqdm(list(g))
+    else:
+
+        def tqdm(g):
+            return g
+
+    dirpath = BASE_DIR / "data" / "adcode"
+    fields = AreaInfo.sorted_fields()
+    objs: list[AreaInfo] = []
+    for p in tqdm(dirpath.glob("*.csv")):
+        for row in parse_csv(p):
+            objs.append(AreaInfo(**dict(zip(fields, row))))
+    await AreaInfo.bulk_create(objs)
+    return objs
 
 
 if __name__ == "__main__":
