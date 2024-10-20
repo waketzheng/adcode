@@ -13,9 +13,10 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager, suppress
 from datetime import datetime
+from enum import IntEnum, auto
 from multiprocessing import active_children
 from pathlib import Path
-from typing import Dict, Generator, Optional, Tuple, Type, TypeAlias, TypeVar
+from typing import Dict, Generator, Optional, Tuple, Type, TypeAlias, TypeVar, Union
 
 import asyncer
 import asynctor
@@ -29,6 +30,8 @@ from database_url import generate
 from loguru import logger
 from pyquery import PyQuery as pq
 from tortoise import Model, Tortoise, fields, run_async
+from tortoise.fields.base import StrEnum
+from tortoise.fields.data import IntEnumFieldInstance
 
 # pip install playwright
 # playwright install --with-deps chromium --dry-run
@@ -88,6 +91,137 @@ class Village(AdcodeModel):
 
     class Meta:
         verbose_name = "乡"
+
+
+"""
+| Column       | Type                  | Description                                             |
+| ------------ | --------------------- | ------------------------------------------------------- |
+| code         | bigint                | 国家统计局12位行政区划代码                              |
+| parent       | bigint                | 12位父级行政区划代码                                    |
+| name         | character varying(64) | 行政单位名称                                            |
+| level        | character varying(16) | 行政单位级别:国/省/市/县/乡/村                          |
+| rank         | integer               | 行政单位级别{0:国,1:省,2:市,3:区/县,4:乡/镇，5:街道/村} |
+| adcode       | integer               | 6位县级行政区划代码                                     |
+| post_code    | character varying(8)  | 邮政编码                                                |
+| area_code    | character varying(4)  | 长途区号                                                |
+| ur_code      | character varying(4)  | 3位城乡属性划分代码                                     |
+| municipality | boolean               | 是否为直辖行政单位                                      |
+| virtual      | boolean               | 是否为虚拟行政单位，例如市辖区、省直辖县等。            |
+| dummy        | boolean               | 是否为模拟行政单位，例如虚拟社区、虚拟村。              |
+| longitude    | double precision      | 地理中心经度                                            |
+| latitude     | double precision      | 地理中心纬度                                            |
+| center       | geometry              | 地理中心, `ST_Point`                                    |
+| province     | character varying(64) | 省                                                      |
+| city         | character varying(64) | 市                                                      |
+| county       | character varying(64) | 区/县                                                   |
+| town         | character varying(64) | 乡/镇                                                   |
+| village      | character varying(64) | 街道/村                                                 |
+"""
+
+
+class AutoName(StrEnum):
+    @staticmethod
+    def _generate_next_value_(name, start, count, last_values):
+        return name
+
+
+class LevelEnum(AutoName):
+    """Use name as value
+
+    Usage::
+        >>> LevelEnum.country == 'country'
+        True
+        >>> LevelEnum.city.name == LevelEnum.city.value == LevelEnum.city == 'city'
+        True
+    """
+
+    country = auto()
+    province = auto()
+    city = auto()
+    county = auto()
+    town = auto()
+    village = auto()
+
+
+class RankEnum(IntEnum):
+    country = 0
+    province = 1
+    city = 2
+    county = 3
+    town = 4
+    village = 5
+
+
+class BoolNullEnum(StrEnum):
+    true = "t"
+    false = "f"
+    null = ""
+
+
+def BoolField(verbose_name: str, **kwargs) -> BoolNullEnum:
+    kwargs.setdefault("default", BoolNullEnum.false)
+    return fields.CharEnumField(BoolNullEnum, verbose_name=verbose_name, **kwargs)
+
+
+class RankFieldInstance(IntEnumFieldInstance):
+    def to_python_value(self, value: Union[str, int, None]) -> Union[IntEnum, None]:
+        if isinstance(value, str):
+            value = int(value)
+        return super().to_python_value(value)
+
+
+def RankField(verbose_name: str, **kwargs) -> RankFieldInstance:
+    return RankFieldInstance(RankEnum, verbose_name, **kwargs)
+
+
+class AreaInfo(Model):
+    id = fields.IntField(primary_key=True)
+    code = fields.IntField(verbose_name="国家统计局12位行政区划代码")
+    parent = fields.IntField(verbose_name="12位父级行政区划代码")
+    name = fields.CharField(max_length=64, verbose_name="行政单位名称", default="")
+    level = fields.CharEnumField(LevelEnum, verbose_name="行政单位级别(英文)")
+    rank = RankField("行政单位级别(数值)")
+    adcode = fields.IntField(verbose_name="6位县级行政区划代码")
+    post_code = fields.CharField(max_length=8, verbose_name="邮政编码")
+    area_code = fields.CharField(max_length=4, verbose_name="长途区号")
+    ur_code = fields.CharField(max_length=4, verbose_name="3位城乡属性划分代码")
+    municipality = BoolField("是否为直辖行政单位")
+    virtual = BoolField("是否为虚拟行政单位，例如市辖区、省直辖县等。")
+    dummy = BoolField("是否为模拟行政单位，例如虚拟社区、虚拟村。")
+    longitude = fields.CharField(max_length=32, verbose_name="地理中心经度", default="")
+    latitude = fields.CharField(max_length=32, verbose_name="地理中心纬度", default="")
+    center = fields.TextField(verbose_name="地理中心, `ST_Point`", default="")
+    province = fields.CharField(max_length=64, verbose_name="省", default="")
+    city = fields.CharField(max_length=64, verbose_name="市", default="")
+    county = fields.CharField(max_length=64, verbose_name="区/县", default="")
+    town = fields.CharField(max_length=64, verbse_name="乡/镇", default="")
+    village = fields.CharField(max_length=64, verbose_name="街道/村", default="")
+
+    @classmethod
+    def sorted_fields(cls) -> list[str]:
+        fields = """
+        code
+        parent
+        name
+        level
+        rank
+        adcode
+        post_code
+        area_code
+        ur_code
+        municipality
+        virtual
+        dummy
+        longitude
+        latitude
+        center
+        province
+        city
+        county
+        town
+        village
+        """
+        return [j for i in fields.strip().splitlines() if (j := i.strip()) != "id"]
 
 
 BASE_DIR = Path(__file__).parent.resolve()
