@@ -322,9 +322,9 @@ def url_to_file(url: URI) -> Path:
 
 
 class Player:
-    _page = None
-    _browser = None
-    _playwright = None
+    _page = None  # type:ignore
+    _browser = None  # type:ignore
+    _playwright = None  # type:ignore
 
     @classmethod
     def init(cls):
@@ -651,11 +651,13 @@ async def laving() -> None:
     async with asyncer.create_task_group() as tg:
         for href, province_name in parse_links(first_page):
             tg.soonify(parse_downloaded)(host + href, province_name, verbose=True)
+    await read_local_adcodes(verbose=True)
     print("provinces:", await Province.all())
     print("cities:", await City.all().count())
     print("counties:", await County.all().count())
     print("towns:", await Town.all().count())
     print("villages:", await Village.all().count())
+    print("area infos:", await AreaInfo.all().count())
 
 
 def parse_csv(p: Path) -> list[list[str]]:

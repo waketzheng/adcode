@@ -106,8 +106,8 @@ for text, href in parse_links(r.content.decode()):
     province_page = response.content.decode()
     province_index = Path(href).stem  # 65.html -> 65
     cities: dict[str, tuple[str, str]] = {}
-    for text, link in parse_links(province_page, text):
-        cities[link] = cities.get(link, ()) + (text,)  # type:ignore
+    for txt, link in parse_links(province_page, text):
+        cities[link] = cities.get(link, ()) + (txt,)  # type:ignore
     province_host = province_url.rsplit("/", 1)[0]
     for link, (adcode, name) in cities.items():
         if name.isdigit() and not adcode.isdigit():

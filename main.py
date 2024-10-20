@@ -48,7 +48,7 @@ INDEX_URL = "https://www.stats.gov.cn/sj/tjbz/tjyqhdmhcxhfdm/2023/index.html"
 if os.getenv("PAD_INDEX_URL") == "1":
     INDEX_URL = INDEX_URL.replace("https://", "https://waketzheng.top/")
     INTERVAL = 0
-    print(f'Change index URL to be: {INDEX_URL}')
+    print(f"Change index URL to be: {INDEX_URL}")
 ALTER_URL = "https://www.mca.gov.cn/mzsj/xzqh/2023/202302xzqh.html"
 ERR_MSG = "Please enable JavaScript and refresh the page"
 ERR_MSG_CN = "请开启JavaScript并刷新该页"
@@ -134,9 +134,9 @@ def url_to_file(url: URI) -> Path:
 
 
 class Player:
-    _page = None
-    _browser = None
-    _playwright = None
+    _page = None  # type:ignore
+    _browser = None  # type:ignore
+    _playwright = None  # type:ignore
 
     @classmethod
     def init(cls):

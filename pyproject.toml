@@ -4,6 +4,7 @@ version = "0.1.0"
 description = ""
 authors = ["Waket Zheng <waketzheng@gmail.com>"]
 readme = "README.md"
+package-mode=false
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -12,6 +13,13 @@ redis = "^5.0.8"
 fake-useragent = "^1.5.1"
 pyquery = "^2.0.1"
 beautifulsoup4 = "^4.12.3"
+tqdm = "^4.66.5"
+asyncer = "^0.0.8"
+asynctor = "^0.6.6"
+tortoise-orm = "^0.21.7"
+tortoise-database-url = "^0.1.2"
+loguru = "^0.7.2"
+playwright = "^1.47.0"
 
 
 [tool.poetry.group.dev.dependencies]
