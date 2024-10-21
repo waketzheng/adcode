@@ -18,12 +18,11 @@ from multiprocessing import active_children
 from pathlib import Path
 from typing import Dict, Generator, Optional, Tuple, Type, TypeAlias, TypeVar, Union
 
+# pip install asynctor asyncer tortoise-orm requests fake_useragent pyquery beautifulsoup4 loguru tqdm
 import asyncer
 import asynctor
 import fake_useragent
 import requests
-
-# pip install asynctor requests fake_useragent pyquery beautifulsoup4 loguru tqdm
 import tortoise
 from bs4 import BeautifulSoup
 from database_url import generate
@@ -32,6 +31,7 @@ from pyquery import PyQuery as pq
 from tortoise import Model, Tortoise, fields, run_async
 from tortoise.fields.base import StrEnum
 from tortoise.fields.data import IntEnumFieldInstance
+from tqdm import tqdm
 
 # pip install playwright
 # playwright install --with-deps chromium --dry-run
@@ -46,12 +46,19 @@ class AdcodeModel(Model):
     adcode = fields.CharField(max_length=20, unique=True)
     name = fields.CharField(max_length=50)
 
+    @classmethod
+    async def six_adcodes(cls) -> "set[int]":
+        adcodes = await cls.all().values_list("adcode", flat=True)
+        return {int(f"{i[:6]:<06}") for i in adcodes}
+
     class Meta:
         abstract = True
 
 
 class Province(AdcodeModel):
     name = fields.CharField(max_length=20, unique=True)
+
+    cities: fields.ReverseRelation["City"]
 
     class Meta:
         verbose_name = "省"
@@ -62,6 +69,8 @@ class City(AdcodeModel):
         "models.Province", on_delete=fields.OnDelete.CASCADE, related_name="cities"
     )
 
+    counties: fields.ReverseRelation["County"]
+
     class Meta:
         verbose_name = "市"
 
@@ -71,6 +80,8 @@ class County(AdcodeModel):
         "models.City", on_delete=fields.OnDelete.CASCADE, related_name="counties"
     )
 
+    towns: fields.ReverseRelation["Town"]
+
     class Meta:
         verbose_name = "县"
 
@@ -79,6 +90,8 @@ class Town(AdcodeModel):
     county: fields.ForeignKeyRelation = fields.ForeignKeyField(
         "models.County", on_delete=fields.OnDelete.CASCADE, related_name="towns"
     )
+
+    villages: fields.ReverseRelation["Village"]
 
     class Meta:
         verbose_name = "镇"
@@ -92,32 +105,6 @@ class Village(AdcodeModel):
 
     class Meta:
         verbose_name = "乡"
-
-
-"""
-| Column       | Type                  | Description                                             |
-| ------------ | --------------------- | ------------------------------------------------------- |
-| code         | bigint                | 国家统计局12位行政区划代码                              |
-| parent       | bigint                | 12位父级行政区划代码                                    |
-| name         | character varying(64) | 行政单位名称                                            |
-| level        | character varying(16) | 行政单位级别:国/省/市/县/乡/村                          |
-| rank         | integer               | 行政单位级别{0:国,1:省,2:市,3:区/县,4:乡/镇，5:街道/村} |
-| adcode       | integer               | 6位县级行政区划代码                                     |
-| post_code    | character varying(8)  | 邮政编码                                                |
-| area_code    | character varying(4)  | 长途区号                                                |
-| ur_code      | character varying(4)  | 3位城乡属性划分代码                                     |
-| municipality | boolean               | 是否为直辖行政单位                                      |
-| virtual      | boolean               | 是否为虚拟行政单位，例如市辖区、省直辖县等。            |
-| dummy        | boolean               | 是否为模拟行政单位，例如虚拟社区、虚拟村。              |
-| longitude    | double precision      | 地理中心经度                                            |
-| latitude     | double precision      | 地理中心纬度                                            |
-| center       | geometry              | 地理中心, `ST_Point`                                    |
-| province     | character varying(64) | 省                                                      |
-| city         | character varying(64) | 市                                                      |
-| county       | character varying(64) | 区/县                                                   |
-| town         | character varying(64) | 乡/镇                                                   |
-| village      | character varying(64) | 街道/村                                                 |
-"""
 
 
 class AutoName(StrEnum):
@@ -175,6 +162,7 @@ def RankField(verbose_name: str, **kwargs) -> RankFieldInstance:
     return RankFieldInstance(RankEnum, verbose_name, **kwargs)
 
 
+# https://github.com/Vonng/adcode?tab=readme-ov-file#%E6%95%B0%E6%8D%AE%E7%BB%93%E6%9E%84
 class AreaInfo(Model):
     id = fields.IntField(primary_key=True)
     code = fields.IntField(verbose_name="国家统计局12位行政区划代码")
@@ -183,9 +171,11 @@ class AreaInfo(Model):
     level = fields.CharEnumField(LevelEnum, verbose_name="行政单位级别(英文)")
     rank = RankField("行政单位级别(数值)")
     adcode = fields.IntField(verbose_name="6位县级行政区划代码")
-    post_code = fields.CharField(max_length=8, verbose_name="邮政编码")
-    area_code = fields.CharField(max_length=4, verbose_name="长途区号")
-    ur_code = fields.CharField(max_length=4, verbose_name="3位城乡属性划分代码")
+    post_code = fields.CharField(max_length=8, verbose_name="邮政编码", default="")
+    area_code = fields.CharField(max_length=4, verbose_name="长途区号", default="")
+    ur_code = fields.CharField(
+        max_length=4, verbose_name="3位城乡属性划分代码", default=""
+    )
     municipality = BoolField("是否为直辖行政单位")
     virtual = BoolField("是否为虚拟行政单位，例如市辖区、省直辖县等。")
     dummy = BoolField("是否为模拟行政单位，例如虚拟社区、虚拟村。")
@@ -199,6 +189,7 @@ class AreaInfo(Model):
     village = fields.CharField(max_length=64, verbose_name="街道/村", default="")
 
     @classmethod
+    @asynctor.cache_attr
     def sorted_fields(cls) -> list[str]:
         fields = """
         code
@@ -224,8 +215,14 @@ class AreaInfo(Model):
         """
         return [j for i in fields.strip().splitlines() if (j := i.strip()) != "id"]
 
+    def __str__(self) -> str:
+        fields = self.sorted_fields()
+        values = [getattr(self, f) for f in fields]
+        return ",".join(map(str, values))
+
 
 BASE_DIR = Path(__file__).parent.resolve()
+DATA_DIR = BASE_DIR / "data" / "adcode"
 URI: TypeAlias = str  # e.g.: '11/1101.html'
 ADCODE: TypeAlias = str  # e.g.: 110100000000
 AreaDict: TypeAlias = Dict[URI, Tuple[ADCODE, str]]
@@ -439,25 +436,28 @@ async def parse_area_dict(
         objs = await parent_model.all()
         adcode_obj = {i.adcode: i for i in objs}
     attr = parent_model.__name__.lower()
-    for url, (adcode, name) in data.items():
-        if name.isdigit() and not adcode.isdigit():
-            adcode, name = name, adcode
-        text = load_or_fetch(url)
-        if not text:
-            continue
-        try:
-            parent = adcode_obj[adcode]
-        except KeyError:
-            if obj := await parent_model.filter(adcode=adcode).first():
-                parent = obj
-            else:
-                print(f"Object not found: {parent_model.__name__}({adcode = })")
+    async with asyncer.create_task_group() as tg:
+        for url, (adcode, name) in data.items():
+            if name.isdigit() and not adcode.isdigit():
+                adcode, name = name, adcode
+            text = load_or_fetch(url)
+            if not text:
                 continue
-        await create_objects(text, parent, attr=attr, css_class=css_class, model=model)
-        host = parent_path(url)
-        for link, label in parse_links(text):
-            url = host + link
-            res[url] = res.get(url, ()) + (label,)  # type:ignore
+            try:
+                parent = adcode_obj[adcode]
+            except KeyError:
+                if obj := await parent_model.filter(adcode=adcode).first():
+                    parent = obj
+                else:
+                    print(f"Object not found: {parent_model.__name__}({adcode = })")
+                    continue
+            tg.soonify(create_objects)(
+                text, parent, attr=attr, css_class=css_class, model=model
+            )
+            host = parent_path(url)
+            for link, label in parse_links(text):
+                url = host + link
+                res[url] = res.get(url, ()) + (label,)  # type:ignore
     return res
 
 
@@ -522,14 +522,7 @@ async def parse_downloaded(root_url: URI, province: str, verbose=False) -> None:
         print(province, f"objects with link: {len(towns) = }")
     if not towns:
         return
-    villages: AreaDict = await parse_area_dict(towns, Village, Town, "tr.villagetr")
-    if verbose and villages:  # Expected villages to be empty, as them are no link
-        print(province, f"{len(villages) = }")
-    if not villages:
-        return
-    houses: AreaDict = build_area_dict(villages)
-    if verbose:
-        logger.warning(f"{province} -- {len(houses) = }")
+    await parse_area_dict(towns, Village, Town, "tr.villagetr")
 
 
 def download_recursive(root_url: URI, province: str, verbose=False) -> None:
@@ -580,6 +573,8 @@ def main() -> None:
             walk(verbose=verbose)
         elif a1 == "parse":
             run_async(laving())
+        elif a1 == "update":
+            run_async(update_local_files(verbose=True))
         elif a1.isdigit():
             count = int(a1)
             with ProcessPoolExecutor() as executor:
@@ -667,24 +662,78 @@ def parse_csv(p: Path) -> list[list[str]]:
 
 
 async def read_local_adcodes(verbose=False) -> list[AreaInfo]:
-    if verbose:
-        from tqdm import tqdm as _tqdm
-
-        def tqdm(g):
-            return _tqdm(list(g))
-    else:
-
-        def tqdm(g):
-            return g
-
-    dirpath = BASE_DIR / "data" / "adcode"
     fields = AreaInfo.sorted_fields()
     objs: list[AreaInfo] = []
-    for p in tqdm(dirpath.glob("*.csv")):
+    if verbose:
+        print(f"Parsing csv files in {DATA_DIR} ...")
+    for p in tqdm(list(DATA_DIR.glob("*.csv"))):
         for row in parse_csv(p):
             objs.append(AreaInfo(**dict(zip(fields, row))))
     await AreaInfo.bulk_create(objs)
     return objs
+
+
+def remove_them(*stems: int) -> None:
+    for stem in stems:
+        file = DATA_DIR / f"{stem}.csv"
+        file.unlink()
+
+
+def fill_zeros(code: Union[str, int], length=12) -> str:
+    return f"{code:<0{length}}"
+
+
+async def update_local_files(verbose=False, should_init=True) -> None:
+    if should_init:
+        await register_orm()
+    six_adcode_localfile = set(int(i.stem) for i in DATA_DIR.glob("*.csv"))
+    six_adcode_country = {int("1" + "0" * 5)}
+    six_adcode_province = await Province.six_adcodes()
+    # 确认没有新增的省份或者直辖市
+    assert not (six_adcode_province - six_adcode_localfile)
+    six_adcode_city = await City.six_adcodes()
+    new_city_adcodes = six_adcode_city - six_adcode_localfile
+    # TODO: 从高德获取经纬度
+    # TODO: 获取长途区号和邮政编码
+    for code in tqdm(new_city_adcodes):
+        assert len(str(code)) == 6
+        city = await City.filter(adcode__startswith=code).get()
+        province = await city.province
+        assert province
+        # 是否为虚拟行政单位，例如市辖区、省直辖县等
+        is_virtual = code // 100 % 100 == 90
+        area_info, _ = await AreaInfo.get_or_create(
+            code=fill_zeros(code),
+            parent=fill_zeros(province.adcode),
+            name=city.name,
+            level=LevelEnum.city,
+            rank=RankEnum.city,
+            adcode=code,
+            virtual=BoolNullEnum[str(is_virtual).lower()],
+            province=province.name,
+            city=city.name,
+        )
+        file = DATA_DIR / f"{code}.csv"
+        file.write_text(str(area_info), encoding="utf-8")
+    if verbose:
+        print(f"{len(new_city_adcodes)} new csv created for with city level")
+
+    six_adcode_county = await County.six_adcodes()
+    new_county_adcodes = six_adcode_county - six_adcode_localfile
+    for code in tqdm(new_county_adcodes):
+        assert len(str(code)) == 6
+    if verbose:
+        print(f"Created {len(new_city_adcodes)} new csv for with county level")
+    to_be_deleted = (
+        six_adcode_localfile
+        - six_adcode_country
+        - six_adcode_province
+        - six_adcode_city
+        - six_adcode_county
+    )
+    if verbose:
+        print(f"{len(to_be_deleted) = }")
+    # remove_them(*to_be_deleted)
 
 
 if __name__ == "__main__":
